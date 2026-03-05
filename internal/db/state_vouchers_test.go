@@ -1,6 +1,16 @@
 // SPDX-FileCopyrightText: (C) 2024 Intel Corporation
 // SPDX-License-Identifier: Apache 2.0
 
+// Package db tests for state_vouchers.go
+//
+// This file contains unit tests for the voucher and key management functions
+// in state_vouchers.go, including:
+//   - Voucher CRUD operations (NewVoucher, AddVoucher, ReplaceVoucher, RemoveVoucher, Voucher)
+//   - Rendezvous blob storage and retrieval (SetRVBlob, RVBlob)
+//   - Owner key management (AddOwnerKey, OwnerKey)
+//   - Manufacturer key management (AddManufacturerKey, ManufacturerKey)
+//
+// Tests use an in-memory SQLite database and test vouchers from the go-fdo testdata package.
 package db
 
 import (
@@ -23,7 +33,13 @@ import (
 	"github.com/fido-device-onboard/go-fdo/testdata"
 )
 
-// Helper to initialize a test database
+// ---------------------------------------------------------------------------
+// Test Helpers
+// ---------------------------------------------------------------------------
+
+// setupTestState initializes an in-memory SQLite database for testing.
+// The database is automatically closed when the test completes via t.Cleanup.
+// Uses a shared cache to allow multiple connections to the same in-memory database.
 func setupTestState(t *testing.T) *State {
 	t.Helper()
 	state, err := InitDb("sqlite", "file::memory:?cache=shared")
@@ -36,7 +52,9 @@ func setupTestState(t *testing.T) *State {
 	return state
 }
 
-// Helper to load a test voucher from go-fdo testdata
+// loadTestVoucher loads the standard test voucher from the go-fdo testdata package.
+// The voucher is a valid FDO ownership voucher that can be used for testing
+// voucher storage, retrieval, and manipulation operations.
 func loadTestVoucher(t *testing.T) *fdo.Voucher {
 	t.Helper()
 	voucherPEM, err := testdata.Files.ReadFile("ov.pem")
@@ -56,7 +74,9 @@ func loadTestVoucher(t *testing.T) *fdo.Voucher {
 	return &voucher
 }
 
-// Helper to generate a self-signed certificate
+// generateTestCert creates a self-signed X.509 certificate for an ECDSA key.
+// The certificate is valid for 24 hours and includes digital signature key usage.
+// This is used to create certificate chains for owner and manufacturer key tests.
 func generateTestCert(t *testing.T, key *ecdsa.PrivateKey) *x509.Certificate {
 	t.Helper()
 	template := &x509.Certificate{
@@ -83,7 +103,9 @@ func generateTestCert(t *testing.T, key *ecdsa.PrivateKey) *x509.Certificate {
 	return cert
 }
 
-// Helper to generate RSA key and certificate
+// generateRSATestCert creates an RSA private key and a self-signed X.509 certificate.
+// The bits parameter specifies the key size (e.g., 2048, 3072).
+// This is used to test RSA key types including Rsa2048RestrKeyType, RsaPkcsKeyType, and RsaPssKeyType.
 func generateRSATestCert(t *testing.T, bits int) (*rsa.PrivateKey, *x509.Certificate) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, bits)
@@ -114,6 +136,12 @@ func generateRSATestCert(t *testing.T, bits int) (*rsa.PrivateKey, *x509.Certifi
 	return key, cert
 }
 
+// ---------------------------------------------------------------------------
+// Voucher CRUD Tests
+// ---------------------------------------------------------------------------
+
+// TestNewVoucher verifies that a newly created voucher can be stored and retrieved.
+// This tests the ManufacturerVoucherPersistentState.NewVoucher implementation.
 func TestNewVoucher(t *testing.T) {
 	state := setupTestState(t)
 	ctx := context.Background()
@@ -137,6 +165,8 @@ func TestNewVoucher(t *testing.T) {
 	}
 }
 
+// TestAddVoucher verifies that a voucher can be added to the owner service.
+// This tests the OwnerVoucherPersistentState.AddVoucher implementation.
 func TestAddVoucher(t *testing.T) {
 	state := setupTestState(t)
 	ctx := context.Background()
@@ -157,6 +187,8 @@ func TestAddVoucher(t *testing.T) {
 	}
 }
 
+// TestVoucher_NotFound verifies that retrieving a non-existent voucher returns ErrNotFound.
+// This ensures proper error handling when a GUID does not exist in the database.
 func TestVoucher_NotFound(t *testing.T) {
 	state := setupTestState(t)
 	ctx := context.Background()
@@ -170,6 +202,8 @@ func TestVoucher_NotFound(t *testing.T) {
 	}
 }
 
+// TestRemoveVoucher verifies that a voucher can be removed from the database.
+// After removal, the voucher should no longer be retrievable (ErrNotFound).
 func TestRemoveVoucher(t *testing.T) {
 	state := setupTestState(t)
 	ctx := context.Background()
@@ -195,6 +229,7 @@ func TestRemoveVoucher(t *testing.T) {
 	}
 }
 
+// TestRemoveVoucher_NotFound verifies that removing a non-existent voucher returns ErrNotFound.
 func TestRemoveVoucher_NotFound(t *testing.T) {
 	state := setupTestState(t)
 	ctx := context.Background()
@@ -208,6 +243,12 @@ func TestRemoveVoucher_NotFound(t *testing.T) {
 	}
 }
 
+// TestReplaceVoucher verifies the voucher replacement flow during TO2 completion.
+// When a device completes onboarding, its voucher is replaced with a new one containing
+// a new GUID. This test verifies that:
+//   - The old voucher is deleted
+//   - The new voucher is stored with the new GUID
+//   - A DeviceOnboarding record is created with TO2Completed=true and timestamp
 func TestReplaceVoucher(t *testing.T) {
 	state := setupTestState(t)
 	ctx := context.Background()
@@ -257,6 +298,13 @@ func TestReplaceVoucher(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Rendezvous Blob Tests
+// ---------------------------------------------------------------------------
+
+// TestSetRVBlob_And_RVBlob verifies that a rendezvous blob can be stored and retrieved.
+// The RV blob contains the TO1d structure (owner addressing info) and the associated voucher.
+// This is used during TO0/TO1 to register and look up device rendezvous information.
 func TestSetRVBlob_And_RVBlob(t *testing.T) {
 	state := setupTestState(t)
 	ctx := context.Background()
@@ -297,6 +345,7 @@ func TestSetRVBlob_And_RVBlob(t *testing.T) {
 	}
 }
 
+// TestRVBlob_NotFound verifies that retrieving an RV blob for a non-existent GUID returns ErrNotFound.
 func TestRVBlob_NotFound(t *testing.T) {
 	state := setupTestState(t)
 	ctx := context.Background()
@@ -310,11 +359,16 @@ func TestRVBlob_NotFound(t *testing.T) {
 	}
 }
 
+// TestRVBlob_Expired verifies that an expired RV blob returns ErrNotFound.
+// RV blobs have an expiration time, and retrieving an expired blob should
+// behave the same as if the blob does not exist. This prevents stale
+// rendezvous information from being used.
 func TestRVBlob_Expired(t *testing.T) {
 	state := setupTestState(t)
 	ctx := context.Background()
 	voucher := loadTestVoucher(t)
 
+	// Create a TO1d structure with owner addressing information
 	to1d := &cose.Sign1[protocol.To1d, []byte]{
 		Payload: cbor.NewByteWrap(protocol.To1d{
 			RV: []protocol.RvTO2Addr{
@@ -342,6 +396,12 @@ func TestRVBlob_Expired(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Owner Key Tests
+// ---------------------------------------------------------------------------
+
+// TestAddOwnerKey_And_OwnerKey_ECDSA verifies storing and retrieving an ECDSA P-384 owner key.
+// Owner keys are used to sign voucher extensions and prove ownership during TO2.
 func TestAddOwnerKey_And_OwnerKey_ECDSA(t *testing.T) {
 	state := setupTestState(t)
 	ctx := context.Background()
@@ -371,6 +431,8 @@ func TestAddOwnerKey_And_OwnerKey_ECDSA(t *testing.T) {
 	}
 }
 
+// TestAddOwnerKey_And_OwnerKey_RSA2048 verifies storing and retrieving an RSA 2048-bit owner key.
+// The Rsa2048RestrKeyType is the restricted RSA key type defined in the FDO specification.
 func TestAddOwnerKey_And_OwnerKey_RSA2048(t *testing.T) {
 	state := setupTestState(t)
 	ctx := context.Background()
@@ -403,6 +465,9 @@ func TestAddOwnerKey_And_OwnerKey_RSA2048(t *testing.T) {
 	}
 }
 
+// TestAddOwnerKey_And_OwnerKey_RSA_PKCS verifies storing and retrieving an RSA PKCS#1 v1.5 key.
+// This tests the RsaPkcsKeyType with a 3072-bit key, demonstrating support for
+// variable RSA key sizes beyond the restricted 2048-bit type.
 func TestAddOwnerKey_And_OwnerKey_RSA_PKCS(t *testing.T) {
 	state := setupTestState(t)
 	ctx := context.Background()
@@ -427,6 +492,7 @@ func TestAddOwnerKey_And_OwnerKey_RSA_PKCS(t *testing.T) {
 	}
 }
 
+// TestOwnerKey_NotFound verifies that requesting a non-existent key type returns ErrNotFound.
 func TestOwnerKey_NotFound(t *testing.T) {
 	state := setupTestState(t)
 	ctx := context.Background()
@@ -437,6 +503,13 @@ func TestOwnerKey_NotFound(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Manufacturer Key Tests
+// ---------------------------------------------------------------------------
+
+// TestAddManufacturerKey_And_ManufacturerKey_ECDSA verifies storing and retrieving
+// an ECDSA P-256 manufacturer key. Manufacturer keys are used during device
+// initialization (DI) to sign the initial voucher.
 func TestAddManufacturerKey_And_ManufacturerKey_ECDSA(t *testing.T) {
 	state := setupTestState(t)
 	ctx := context.Background()
@@ -466,6 +539,8 @@ func TestAddManufacturerKey_And_ManufacturerKey_ECDSA(t *testing.T) {
 	}
 }
 
+// TestAddManufacturerKey_And_ManufacturerKey_RSA2048 verifies storing and retrieving
+// an RSA 2048-bit manufacturer key with the restricted key type.
 func TestAddManufacturerKey_And_ManufacturerKey_RSA2048(t *testing.T) {
 	state := setupTestState(t)
 	ctx := context.Background()
@@ -490,6 +565,9 @@ func TestAddManufacturerKey_And_ManufacturerKey_RSA2048(t *testing.T) {
 	}
 }
 
+// TestAddManufacturerKey_And_ManufacturerKey_RSA_PSS verifies storing and retrieving
+// an RSA-PSS manufacturer key. RSA-PSS uses probabilistic signature scheme padding
+// and is considered more secure than PKCS#1 v1.5 signatures.
 func TestAddManufacturerKey_And_ManufacturerKey_RSA_PSS(t *testing.T) {
 	state := setupTestState(t)
 	ctx := context.Background()
@@ -514,6 +592,8 @@ func TestAddManufacturerKey_And_ManufacturerKey_RSA_PSS(t *testing.T) {
 	}
 }
 
+// TestManufacturerKey_NotFound verifies that requesting a non-existent manufacturer
+// key type returns ErrNotFound.
 func TestManufacturerKey_NotFound(t *testing.T) {
 	state := setupTestState(t)
 	ctx := context.Background()
@@ -524,6 +604,13 @@ func TestManufacturerKey_NotFound(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Certificate Chain Tests
+// ---------------------------------------------------------------------------
+
+// TestOwnerKey_MultipleCertificates verifies that a certificate chain with multiple
+// certificates can be stored and retrieved correctly. FDO supports certificate chains
+// for key validation, and this test ensures the entire chain is preserved.
 func TestOwnerKey_MultipleCertificates(t *testing.T) {
 	state := setupTestState(t)
 	ctx := context.Background()
@@ -551,6 +638,13 @@ func TestOwnerKey_MultipleCertificates(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Error Case Tests
+// ---------------------------------------------------------------------------
+
+// TestAddOwnerKey_NonRSAKeyWithRSAType verifies that adding an ECDSA key with an
+// RSA key type returns an error. The key type must match the actual key algorithm
+// to ensure proper signature verification during FDO protocol operations.
 func TestAddOwnerKey_NonRSAKeyWithRSAType(t *testing.T) {
 	state := setupTestState(t)
 
@@ -567,6 +661,9 @@ func TestAddOwnerKey_NonRSAKeyWithRSAType(t *testing.T) {
 	}
 }
 
+// TestAddManufacturerKey_NonRSAKeyWithRSAType verifies that adding an ECDSA key
+// with an RSA key type returns an error. This is the manufacturer key equivalent
+// of TestAddOwnerKey_NonRSAKeyWithRSAType.
 func TestAddManufacturerKey_NonRSAKeyWithRSAType(t *testing.T) {
 	state := setupTestState(t)
 
